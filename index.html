@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Supabase 照片墙</title>
+    <!-- 引入 Supabase JS 库 -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        body { font-family: sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; }
+        .hidden { display: none; }
+        .box { border: 1px solid #ccc; padding: 20px; margin-bottom: 20px; border-radius: 8px; }
+        input, button { display: block; width: 100%; margin: 10px 0; padding: 10px; box-sizing: border-box; }
+        button { background-color: #3ecf8e; color: white; border: none; cursor: pointer; } /* Supabase 绿 */
+        button:hover { background-color: #2ea872; }
+        .media-item { margin-top: 10px; border-bottom: 1px solid #eee; padding-bottom: 10px; }
+        img, video { max-width: 100%; border-radius: 5px; }
+    </style>
+</head>
+<body>
+
+    <h1>Supabase 社交分享</h1>
+
+    <!-- 登录/注册区域 -->
+    <div id="auth-container" class="box">
+        <h2>登录 / 注册</h2>
+        <input type="email" id="email" placeholder="邮箱地址">
+        <input type="password" id="password" placeholder="密码">
+        <button id="btn-login">登录</button>
+        <button id="btn-signup" style="background-color: #666;">注册</button>
+        <p id="auth-msg"></p>
+    </div>
+
+    <!-- 主界面 -->
+    <div id="app-container" class="box hidden">
+        <p>欢迎, <span id="user-email"></span> <button id="btn-logout" style="width:auto; padding:5px; background:#999;">退出</button></p>
+        
+        <h3>发布内容</h3>
+        <input type="file" id="file-input" accept="image/*,video/*">
+        <button id="btn-upload">上传</button>
+        <p id="upload-status"></p>
+
+        <h3>动态列表</h3>
+        <div id="gallery">加载中...</div>
+    </div>
+
+    <script>
+        // ---------------------------------------------------------
+        // TODO: 这里填你 Supabase 设置里 API 页面看到的内容
+        // ---------------------------------------------------------
+        const SUPABASE_URL = 'https://vjurrieujwwmykfxwcny.supabase.co';
+        const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqdXJyaWV1and3bXlrZnh3Y255Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc4MDE5NzUsImV4cCI6MjA4MzM3Nzk3NX0.gz7xRz4cQ4Jnhi7FFg_7XbK2YNjqPDBWmlQa9V-yTnY';
+        // ---------------------------------------------------------
+
+        // 初始化 Supabase
+        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        // 元素引用
+        const authContainer = document.getElementById('auth-container');
+        const appContainer = document.getElementById('app-container');
+        const emailInput = document.getElementById('email');
+        const passInput = document.getElementById('password');
+        const authMsg = document.getElementById('auth-msg');
+        const gallery = document.getElementById('gallery');
+
+        // 1. 检查当前有没有登录
+        async function checkUser() {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (user) {
+                showApp(user);
+            } else {
+                authContainer.classList.remove('hidden');
+                appContainer.classList.add('hidden');
+            }
+        }
+        checkUser();
+
+        function showApp(user) {
+            authContainer.classList.add('hidden');
+            appContainer.classList.remove('hidden');
+            document.getElementById('user-email').textContent = user.email;
+            loadPosts();
+        }
+
+        // 2. 注册
+        document.getElementById('btn-signup').addEventListener('click', async () => {
+            const { data, error } = await supabase.auth.signUp({
+                email: emailInput.value,
+                password: passInput.value,
+            });
+            if (error) authMsg.textContent = "注册出错: " + error.message;
+            else {
+                alert("注册成功！请检查邮箱确认链接，或者直接尝试登录（如果Supabase设置了不用验证）");
+                // 默认 Supabase 需要去邮箱点确认链接。
+                // 如果嫌麻烦，去 Supabase 后台 Auth -> Providers -> Email -> 把 "Confirm email" 关掉
+            }
+        });
+
+        // 3. 登录
+        document.getElementById('btn-login').addEventListener('click', async () => {
+            const { data, error } = await supabase.auth.signInWithPassword({
+                email: emailInput.value,
+                password: passInput.value,
+            });
+            if (error) authMsg.textContent = "登录失败: " + error.message;
+            else {
+                showApp(data.user);
+            }
+        });
+
+        // 4. 退出
+        document.getElementById('btn-logout').addEventListener('click', async () => {
+            await supabase.auth.signOut();
+            window.location.reload();
+        });
+
+        // 5. 上传
+        document.getElementById('btn-upload').addEventListener('click', async () => {
+            const file = document.getElementById('file-input').files[0];
+            if (!file) return alert("选个文件先");
+            
+            document.getElementById('upload-status').textContent = "上传中...";
+
+            try {
+                // A. 上传文件到 Storage Bucket 'uploads'
+                // 文件名加个时间戳防止重复
+                const fileName = Date.now() + '_' + file.name;
+                const { data, error } = await supabase.storage
+                    .from('uploads')
+                    .upload(fileName, file);
+
+                if (error) throw error;
+
+                // B. 获取公开链接
+                const { data: { publicUrl } } = supabase.storage
+                    .from('uploads')
+                    .getPublicUrl(fileName);
+
+                // C. 把链接存入数据库 'posts' 表
+                // 记得这里要获取当前用户
+                const { data: { user } } = await supabase.auth.getUser();
+                
+                const { error: dbError } = await supabase
+                    .from('posts')
+                    .insert([
+                        { 
+                            url: publicUrl, 
+                            type: file.type, 
+                            user_email: user.email 
+                        }
+                    ]);
+                
+                if (dbError) throw dbError;
+
+                document.getElementById('upload-status').textContent = "成功！";
+                loadPosts(); // 刷新列表
+
+            } catch (err) {
+                console.error(err);
+                document.getElementById('upload-status').textContent = "失败: " + err.message;
+            }
+        });
+
+        // 6. 读取帖子
+        async function loadPosts() {
+            gallery.innerHTML = "加载中...";
+            
+            // 从 posts 表里查数据，按创建时间倒序
+            const { data, error } = await supabase
+                .from('posts')
+                .select('*')
+                .order('created_at', { ascending: false });
+
+            if (error) {
+                gallery.innerHTML = "加载失败";
+                return;
+            }
+
+            gallery.innerHTML = "";
+            data.forEach(post => {
+                const div = document.createElement('div');
+                div.className = 'media-item';
+                let mediaHtml = '';
+                
+                if (post.type && post.type.startsWith('video')) {
+                    mediaHtml = `<video src="${post.url}" controls></video>`;
+                } else {
+                    mediaHtml = `<img src="${post.url}" loading="lazy">`;
+                }
+
+                div.innerHTML = `
+                    <div>${mediaHtml}</div>
+                    <small>用户: ${post.user_email}</small>
+                `;
+                gallery.appendChild(div);
+            });
+        }
+    </script>
+</body>
+</html>
