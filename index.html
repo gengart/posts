@@ -46,14 +46,21 @@
 
     <script>
         // ---------------------------------------------------------
-        // TODO: 这里填你 Supabase 设置里 API 页面看到的内容
+        // 这里的 Key 如果是必须要填你自己的，请确保它是正确的
         // ---------------------------------------------------------
         const SUPABASE_URL = 'https://vjurrieujwwmykfxwcny.supabase.co';
         const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZqdXJyaWV1and3bXlrZnh3Y255Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njc4MDE5NzUsImV4cCI6MjA4MzM3Nzk3NX0.gz7xRz4cQ4Jnhi7FFg_7XbK2YNjqPDBWmlQa9V-yTnY';
         // ---------------------------------------------------------
 
-        // 初始化 Supabase
-        const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+        // ★★★ 修复点 1：使用 window.supabase 确保调用的是全局库，并将实例命名为 sb ★★★
+        let sb;
+        try {
+            sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+            console.log("Supabase 初始化成功");
+        } catch (err) {
+            console.error("初始化失败，可能是 CDN 没加载出来", err);
+            alert("初始化失败，请检查网络或控制台");
+        }
 
         // 元素引用
         const authContainer = document.getElementById('auth-container');
@@ -65,7 +72,8 @@
 
         // 1. 检查当前有没有登录
         async function checkUser() {
-            const { data: { user } } = await supabase.auth.getUser();
+            if(!sb) return;
+            const { data: { user } } = await sb.auth.getUser();
             if (user) {
                 showApp(user);
             } else {
@@ -84,33 +92,53 @@
 
         // 2. 注册
         document.getElementById('btn-signup').addEventListener('click', async () => {
-            const { data, error } = await supabase.auth.signUp({
-                email: emailInput.value,
-                password: passInput.value,
-            });
-            if (error) authMsg.textContent = "注册出错: " + error.message;
-            else {
-                alert("注册成功！请检查邮箱确认链接，或者直接尝试登录（如果Supabase设置了不用验证）");
-                // 默认 Supabase 需要去邮箱点确认链接。
-                // 如果嫌麻烦，去 Supabase 后台 Auth -> Providers -> Email -> 把 "Confirm email" 关掉
+            // ★★★ 修复点 2：增加点击反馈，确认按钮是活的 ★★★
+            authMsg.textContent = "正在处理注册请求...";
+            console.log("点击了注册按钮");
+
+            if (!emailInput.value || !passInput.value) {
+                alert("请输入邮箱和密码");
+                return;
+            }
+
+            try {
+                // 注意这里用了 sb (我们刚才定义的实例)
+                const { data, error } = await sb.auth.signUp({
+                    email: emailInput.value,
+                    password: passInput.value,
+                });
+                
+                if (error) {
+                    console.error(error);
+                    authMsg.textContent = "注册出错: " + error.message;
+                    alert("注册失败：" + error.message);
+                } else {
+                    console.log("注册结果", data);
+                    alert("注册请求已发送！\n请务必检查你的邮箱（包括垃圾箱）点击确认链接。\n如果你在后台关了验证，请直接尝试登录。");
+                }
+            } catch (e) {
+                alert("发生未知错误，请看控制台");
+                console.error(e);
             }
         });
 
         // 3. 登录
         document.getElementById('btn-login').addEventListener('click', async () => {
-            const { data, error } = await supabase.auth.signInWithPassword({
+            authMsg.textContent = "正在登录...";
+            const { data, error } = await sb.auth.signInWithPassword({
                 email: emailInput.value,
                 password: passInput.value,
             });
-            if (error) authMsg.textContent = "登录失败: " + error.message;
-            else {
+            if (error) {
+                authMsg.textContent = "登录失败: " + error.message;
+            } else {
                 showApp(data.user);
             }
         });
 
         // 4. 退出
         document.getElementById('btn-logout').addEventListener('click', async () => {
-            await supabase.auth.signOut();
+            await sb.auth.signOut();
             window.location.reload();
         });
 
@@ -122,25 +150,20 @@
             document.getElementById('upload-status').textContent = "上传中...";
 
             try {
-                // A. 上传文件到 Storage Bucket 'uploads'
-                // 文件名加个时间戳防止重复
                 const fileName = Date.now() + '_' + file.name;
-                const { data, error } = await supabase.storage
+                const { data, error } = await sb.storage
                     .from('uploads')
                     .upload(fileName, file);
 
                 if (error) throw error;
 
-                // B. 获取公开链接
-                const { data: { publicUrl } } = supabase.storage
+                const { data: { publicUrl } } = sb.storage
                     .from('uploads')
                     .getPublicUrl(fileName);
 
-                // C. 把链接存入数据库 'posts' 表
-                // 记得这里要获取当前用户
-                const { data: { user } } = await supabase.auth.getUser();
+                const { data: { user } } = await sb.auth.getUser();
                 
-                const { error: dbError } = await supabase
+                const { error: dbError } = await sb
                     .from('posts')
                     .insert([
                         { 
@@ -153,7 +176,7 @@
                 if (dbError) throw dbError;
 
                 document.getElementById('upload-status').textContent = "成功！";
-                loadPosts(); // 刷新列表
+                loadPosts(); 
 
             } catch (err) {
                 console.error(err);
@@ -164,9 +187,7 @@
         // 6. 读取帖子
         async function loadPosts() {
             gallery.innerHTML = "加载中...";
-            
-            // 从 posts 表里查数据，按创建时间倒序
-            const { data, error } = await supabase
+            const { data, error } = await sb
                 .from('posts')
                 .select('*')
                 .order('created_at', { ascending: false });
